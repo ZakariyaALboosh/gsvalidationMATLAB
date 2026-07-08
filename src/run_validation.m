@@ -8,6 +8,10 @@
 %                  extractMeasuredSNR -> compareAndPlot. PASSES when the
 %                  extracted SNR matches the input within 0.5 dB (max abs
 %                  error above the elevation mask) and correlation > 0.99.
+%     "geomtest" - geometry + link-budget check against a real TLE: prints
+%                  a pass table (az/el/range/Doppler/predicted SNR) to
+%                  eyeball. Needs a TLE file in /data and the Aerospace
+%                  (or Satellite Communications) Toolbox.
 %     "hdf5"     - full pipeline on a SatNOGS network .h5 artifact
 %                  (parse -> config -> geometry -> predict -> extract ->
 %                  compare).                       [not yet built: step 3/5]
@@ -15,13 +19,14 @@
 %                                                  [not yet built: step 4/5]
 
 % ======================= CONFIG BLOCK ==================================
-MODE = "selftest";            % "selftest" | "hdf5" | "dat"
+MODE = "selftest";            % "selftest" | "geomtest" | "hdf5" | "dat"
 
 paths.repo    = fileparts(mfilename('fullpath'));      % .../src
 paths.data    = fullfile(paths.repo, '..', 'data');
 paths.output  = fullfile(paths.repo, '..', 'output');
 paths.config  = fullfile(paths.repo, '..', 'config', 'station_uhf.m');
 paths.wf_file = fullfile(paths.data, 'observation.h5'); % .h5 or .dat to run
+paths.tle_file = fullfile(paths.data, 'target.tle');    % TLE for geomtest/dat
 
 obs_start     = datetime(2026, 1, 1, 12, 0, 0, 'TimeZone', 'UTC'); % pass window
 obs_stop      = obs_start + minutes(12);
@@ -62,6 +67,32 @@ switch MODE
         assert(results.corr > 0.99, ...
             'SELFTEST FAILED: correlation %.4f <= 0.99.', results.corr);
         fprintf('SELFTEST PASSED. Figures and results in %s\n', paths.output);
+
+    case "geomtest"
+        fprintf('=== GEOMTEST: pass geometry + link budget from a real TLE ===\n');
+        station = loadStationConfig(paths.config);
+        geo = computePassGeometry(paths.tle_file, station.lat_deg, ...
+            station.lon_deg, station.alt_m, obs_start, obs_stop, 1, ...
+            station.freq_Hz);
+        [snr_pred_dB, budget, excluded] = predictSNR(geo, station);
+
+        % pass table every 30 s while above the horizon — eyeball check
+        fprintf('\n%20s %8s %8s %10s %12s %10s\n', ...
+            'time (UTC)', 'az deg', 'el deg', 'range km', 'doppler kHz', 'SNR dB');
+        for i = 1:30:numel(geo.time)
+            if geo.el_deg(i) < 0, continue; end
+            fprintf('%20s %8.1f %8.1f %10.1f %12.2f %10.1f\n', ...
+                string(geo.time(i), 'yyyy-MM-dd HH:mm:ss'), geo.az_deg(i), ...
+                geo.el_deg(i), geo.range_m(i)/1e3, geo.doppler_Hz(i)/1e3, ...
+                snr_pred_dB(i));
+        end
+        [el_max, i_max] = max(geo.el_deg);
+        fprintf(['\nMax elevation %.1f deg at %s; range %.0f km; peak ', ...
+            'predicted SNR %.1f dB; %d of %d samples above 5 deg.\n'], ...
+            el_max, string(geo.time(i_max)), geo.range_m(i_max)/1e3, ...
+            max(snr_pred_dB(~excluded)), nnz(~excluded), numel(excluded));
+        fprintf('\nConstant budget terms:\n');
+        disp(budget);
 
     case "hdf5"
         error('run_validation:notBuilt', ...
