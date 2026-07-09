@@ -77,6 +77,7 @@ at a modelling error (antenna pattern, obstruction, wrong TLE, misalignment).
   parseWaterfall.m          format dispatcher (.h5/.hdf5/.dat)
   parseWaterfallHDF5.m      SatNOGS .h5 artifacts (dequantises uint8 data)
   parseWaterfallDAT.m       (step 4, not yet built) raw client .dat files
+  undoDopplerCorrection.m   utility: corrected waterfall -> raw sky view
 /config
   station_uhf.m             your station parameters — EDIT THIS
 /data                       drop your .h5 / .dat / .tle files here
@@ -204,6 +205,33 @@ artifact: a strong carrier followed −doppler(t) to within one bin. Hence
 `wf_doppler_corrected = true` in the config block (the extraction tracks a
 constant offset); `freq_offset_Hz` nudges that offset if the transmitter is
 off-frequency — tune it by eye on the waterfall/track overlay figure.
+
+**If your file is NOT Doppler-corrected** (a non-SatNOGS recording, or an
+unusual client build): set `wf_doppler_corrected = false` in the config
+block — the extraction then follows the full ±10 kHz Doppler S-curve
+instead of a constant offset. Both cases are first-class; the setting just
+picks the track model. To *check* which kind you have, look at the
+waterfall figure: satellite vertical + birdies S-curved ⇒ corrected;
+satellite S-curved ⇒ uncorrected.
+
+**Converting a corrected waterfall back to the raw sky view**: the utility
+`undoDopplerCorrection` shifts every row by the predicted Doppler, so the
+satellite becomes the classic S-curve again and birdies become vertical
+(verified on the real artifact: the birdie's residual drops to 30 Hz,
+under one bin). Optionally writes the result as an .h5 readable by this
+pipeline:
+
+```matlab
+wf  = parseWaterfall('data/observation.h5');
+geo = computePassGeometry(wf.meta.tle, wf.meta.lat, wf.meta.lon, ...
+          wf.meta.alt, wf.start_time, ...
+          wf.start_time + seconds(wf.t_s(end)), 1, wf.meta.frequency_Hz);
+wf_raw = undoDopplerCorrection(wf, geo, ...
+          struct('out_h5', 'output/observation_raw.h5'));
+```
+
+Bins that shift in from outside the recorded passband are filled with the
+row median — treat the outer ±|doppler| edge strips as synthetic.
 
 Pick a **well-vetted, strong observation** for validation runs: on a weak
 or QRM-dominated recording the measured "SNR" sits at the estimator's noise
