@@ -84,8 +84,10 @@ if (ischar(tle) && size(tle, 1) == 1 || (isstring(tle) && isscalar(tle))) ...
     return;
 end
 % Not a file: treat as TLE text and normalise to a 3-line cellstr
-if isstring(tle) && numel(tle) == 3
-    lines = cellstr(tle(:));
+if iscellstr(tle) && numel(tle) == 3                       %#ok<ISCLSTR>
+    lines = tle(:).';
+elseif isstring(tle) && numel(tle) == 3
+    lines = cellstr(tle(:).');
 elseif ischar(tle) && size(tle, 1) == 3
     lines = cellstr(tle);
 elseif (ischar(tle) || (isstring(tle) && isscalar(tle)))
@@ -98,6 +100,11 @@ if numel(lines) ~= 3
     error('computePassGeometry:badTLE', ...
         'TLE text has %d lines; expected 3 (name + line1 + line2).', ...
         numel(lines));
+end
+% SatNOGS metadata uses the 3LE name form '0 SWISSCUBE'; strip the '0 '
+% marker so the name line is plain (safest for MATLAB's TLE reader)
+if startsWith(lines{1}, '0 ')
+    lines{1} = strtrim(lines{1}(3:end));
 end
 tle_file = [tempname '.tle'];
 fid = fopen(tle_file, 'w');

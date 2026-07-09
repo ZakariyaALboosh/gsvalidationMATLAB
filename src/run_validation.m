@@ -12,11 +12,15 @@
 %                  a pass table (az/el/range/Doppler/predicted SNR) to
 %                  eyeball. Needs a TLE file in /data and the Aerospace
 %                  (or Satellite Communications) Toolbox.
-%     "hdf5"     - full pipeline on a SatNOGS network .h5 artifact
-%                  (parse -> config -> geometry -> predict -> extract ->
-%                  compare).                       [not yet built: step 3/5]
+%     "hdf5"     - full pipeline on a SatNOGS network .h5 artifact:
+%                  parse -> config -> geometry -> predict -> extract ->
+%                  compare. The artifact's TLE / frequency / location
+%                  drive the geometry (they OVERRIDE the config); the
+%                  config supplies the RF terms. SatNOGS waterfalls are
+%                  Doppler-corrected, so the extraction tracks a constant
+%                  offset (wf_doppler_corrected below).
 %     "dat"      - full pipeline on a raw client .dat waterfall.
-%                                                  [not yet built: step 4/5]
+%                                                  [not yet built: step 4]
 
 % ======================= CONFIG BLOCK ==================================
 MODE = "selftest";            % "selftest" | "geomtest" | "hdf5" | "dat"
@@ -25,12 +29,17 @@ paths.repo    = fileparts(mfilename('fullpath'));      % .../src
 paths.data    = fullfile(paths.repo, '..', 'data');
 paths.output  = fullfile(paths.repo, '..', 'output');
 paths.config  = fullfile(paths.repo, '..', 'config', 'station_uhf.m');
-paths.wf_file = fullfile(paths.data, 'observation.h5'); % .h5 or .dat to run
+paths.wf_file = fullfile(paths.data, ...
+    'usugasteamObservation14281955Station2550.h5');     % .h5 or .dat to run
 paths.tle_file = fullfile(paths.data, 'target.tle');    % TLE for geomtest/dat
 
 obs_start     = datetime(2026, 1, 1, 12, 0, 0, 'TimeZone', 'UTC'); % pass window
-obs_stop      = obs_start + minutes(12);
+obs_stop      = obs_start + minutes(12);   % (hdf5 mode: taken from the file)
 time_offset_s = 0;            % manual waterfall<->geometry alignment nudge (s)
+wf_doppler_corrected = true;  % SatNOGS artifacts are Doppler-corrected ->
+                              % track a constant offset, not the S-curve
+freq_offset_Hz = 0;           % transmitter off-frequency nudge (Hz); tune by
+                              % eye on the waterfall/track overlay figure
 % =======================================================================
 
 addpath(paths.repo);
@@ -95,8 +104,47 @@ switch MODE
         disp(budget);
 
     case "hdf5"
-        error('run_validation:notBuilt', ...
-            'hdf5 mode arrives with build steps 3/5 (parseWaterfallHDF5 + integration).');
+        fprintf('=== HDF5: end-to-end validation of a SatNOGS artifact ===\n');
+        station = loadStationConfig(paths.config);
+        wf = parseWaterfall(paths.wf_file);
+
+        % --- precedence: artifact metadata drives the geometry ----------
+        tle = paths.tle_file;
+        lat = station.lat_deg; lon = station.lon_deg; alt = station.alt_m;
+        if isfield(wf.meta, 'tle'), tle = wf.meta.tle; end
+        if isfield(wf.meta, 'lat')
+            lat = wf.meta.lat; lon = wf.meta.lon; alt = wf.meta.alt;
+        end
+        if isfield(wf.meta, 'frequency_Hz') && isfinite(wf.meta.frequency_Hz)
+            station.freq_Hz = wf.meta.frequency_Hz;
+        end
+        if ~isnat(wf.start_time)
+            t0 = wf.start_time;
+            t1 = wf.start_time + seconds(wf.t_s(end));
+        else
+            t0 = obs_start;  t1 = obs_stop;   % fallback: config window
+        end
+        fprintf('Observation window %s .. %s UTC, f = %.6f MHz\n', ...
+            string(t0), string(t1), station.freq_Hz / 1e6);
+
+        % --- geometry -> prediction -> measurement -> comparison --------
+        geo = computePassGeometry(tle, lat, lon, alt, t0, t1, 1, ...
+            station.freq_Hz);
+        [snr_pred_dB, budget, ~] = predictSNR(geo, station);
+        [snr_meas_dB, track, toff] = extractMeasuredSNR(wf, geo, struct( ...
+            'time_offset_s',  time_offset_s, ...
+            'doppler_factor', double(~wf_doppler_corrected), ...
+            'freq_offset_Hz', freq_offset_Hz));
+
+        label = 'hdf5';
+        if isfield(wf.meta, 'observation_id')
+            label = sprintf('obs%d', wf.meta.observation_id);
+        end
+        compareAndPlot(geo, snr_pred_dB, wf, snr_meas_dB, struct( ...
+            'out_dir', paths.output, 'label', label, ...
+            'time_offset_s', toff, 'track', track));
+        fprintf('\nConstant budget terms:\n');
+        disp(budget);
 
     case "dat"
         error('run_validation:notBuilt', ...
