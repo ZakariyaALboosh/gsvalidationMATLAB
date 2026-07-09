@@ -74,8 +74,8 @@ at a modelling error (antenna pattern, obstruction, wrong TLE, misalignment).
   computePassGeometry.m     TLE → az/el/range/Doppler histories
   predictSNR.m              link budget → predicted SNR(t)
   loadStationConfig.m       reads/validates the station config
-  parseWaterfall.m          (step 3+, not yet built) format dispatcher
-  parseWaterfallHDF5.m      (step 3, not yet built) SatNOGS .h5 artifacts
+  parseWaterfall.m          format dispatcher (.h5/.hdf5/.dat)
+  parseWaterfallHDF5.m      SatNOGS .h5 artifacts (dequantises uint8 data)
   parseWaterfallDAT.m       (step 4, not yet built) raw client .dat files
 /config
   station_uhf.m             your station parameters — EDIT THIS
@@ -185,11 +185,18 @@ wrong TLE or wrong time window.
 
 ### 3.4 Real observations (hdf5 / dat modes)
 
-*Coming with build steps 3–5.* The flow will be: download the waterfall
-artifact (.h5) from an observation page on network.satnogs.org into `/data`,
-point `paths.wf_file` at it, set `MODE = "hdf5"`, F5. For raw `.dat` files
-from your own station (`/tmp/.satnogs/data/` on the Pi) you additionally
-supply the TLE and pass window yourself, since `.dat` files carry no metadata.
+The HDF5 parser is built (step 3): `wf = parseWaterfall('data/....h5')`
+returns the unified waterfall struct, with the artifact's TLE / frequency /
+station location in `wf.meta`. Note that artifacts store the spectrum as
+uint8 with per-channel offset/scale vectors; the parser dequantises back to
+uncalibrated dB automatically (per-channel offsets would NOT cancel in the
+S − N difference, so this step is mandatory — see the header comment).
+
+The end-to-end modes arrive with steps 4–5: download the waterfall artifact
+(.h5) from an observation page on network.satnogs.org into `/data`, point
+`paths.wf_file` at it, set `MODE = "hdf5"`, F5. For raw `.dat` files from
+your own station (`/tmp/.satnogs/data/` on the Pi) you additionally supply
+the TLE and pass window yourself, since `.dat` files carry no metadata.
 
 ---
 
@@ -312,7 +319,7 @@ Everything needed to regenerate the numbers is saved in
 | Step | Content | Status |
 |---|---|---|
 | 1 | selftest chain (synthetic waterfall → extraction → comparison) | ✅ merged |
-| 2 | pass geometry + link-budget prediction (geomtest) | ✅ this PR |
-| 3 | SatNOGS HDF5 artifact parser | ⏳ next |
+| 2 | pass geometry + link-budget prediction (geomtest) | ✅ merged |
+| 3 | SatNOGS HDF5 artifact parser + dispatcher | ✅ this PR |
 | 4 | raw client `.dat` parser | ⏳ |
 | 5 | full integration in hdf5 mode | ⏳ |
