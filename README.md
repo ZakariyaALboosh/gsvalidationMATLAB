@@ -98,7 +98,7 @@ block at the top, press **F5**. The `MODE` variable selects what runs:
 |---|---|---|
 | `"selftest"` | end-to-end test of the measurement chain on synthetic data | nothing — no toolboxes, no files |
 | `"geomtest"` | pass table + predicted SNR from a real TLE | Aerospace Toolbox, a TLE in `/data`, edited config |
-| `"hdf5"` | full pipeline on a SatNOGS network artifact | *(build step 3/5 — not yet available)* |
+| `"hdf5"` | full pipeline on a SatNOGS network artifact | Aerospace Toolbox, a .h5 in `/data`, edited config |
 | `"dat"` | full pipeline on a raw station `.dat` file | *(build step 4 — not yet available)* |
 
 ### 3.1 First run: the selftest
@@ -185,18 +185,34 @@ wrong TLE or wrong time window.
 
 ### 3.4 Real observations (hdf5 / dat modes)
 
-The HDF5 parser is built (step 3): `wf = parseWaterfall('data/....h5')`
-returns the unified waterfall struct, with the artifact's TLE / frequency /
-station location in `wf.meta`. Note that artifacts store the spectrum as
-uint8 with per-channel offset/scale vectors; the parser dequantises back to
-uncalibrated dB automatically (per-channel offsets would NOT cancel in the
-S − N difference, so this step is mandatory — see the header comment).
+**hdf5 mode is the full pipeline**: download the waterfall artifact (.h5)
+from an observation page on network.satnogs.org into `/data`, point
+`paths.wf_file` at it, set `MODE = "hdf5"`, F5. Everything the geometry
+needs (TLE, frequency, station location, start time) comes from the
+artifact's own metadata and overrides the config; the config supplies the
+RF terms. The parser dequantises the uint8 spectrum back to uncalibrated dB
+automatically (artifacts store per-channel offset/scale vectors, which
+would NOT cancel in the S − N difference — see the parser header).
 
-The end-to-end modes arrive with steps 4–5: download the waterfall artifact
-(.h5) from an observation page on network.satnogs.org into `/data`, point
-`paths.wf_file` at it, set `MODE = "hdf5"`, F5. For raw `.dat` files from
-your own station (`/tmp/.satnogs/data/` on the Pi) you additionally supply
-the TLE and pass window yourself, since `.dat` files carry no metadata.
+**Crucial: SatNOGS waterfalls are Doppler-corrected.** The client shifts
+the receive frequency along the predicted Doppler curve while recording, so
+in the waterfall the *satellite* appears as a near-vertical trace at a
+constant offset (transmitter off-frequency + oscillator drift), while
+*fixed terrestrial carriers* (birdies) appear as inverted S-curves — the
+mirror image of the correction. This was verified empirically on a real
+artifact: a strong carrier followed −doppler(t) to within one bin. Hence
+`wf_doppler_corrected = true` in the config block (the extraction tracks a
+constant offset); `freq_offset_Hz` nudges that offset if the transmitter is
+off-frequency — tune it by eye on the waterfall/track overlay figure.
+
+Pick a **well-vetted, strong observation** for validation runs: on a weak
+or QRM-dominated recording the measured "SNR" sits at the estimator's noise
+bias floor (top-3-of-window on pure noise gives a few dB) and correlation
+with the prediction collapses — the figures make this immediately obvious.
+
+The `.dat` mode arrives with step 4: for raw files from your own station
+(`/tmp/.satnogs/data/` on the Pi) you additionally supply the TLE and pass
+window yourself, since `.dat` files carry no metadata.
 
 ---
 
@@ -242,15 +258,23 @@ spectrum at one time):
    two are anchored exactly; otherwise both are assumed to start together.
    A `time_offset_s` parameter lets you nudge the alignment manually — watch
    figure 3 to see when it's right.
-2. **Follow the Doppler track.** The predicted Doppler is interpolated onto
-   each row time; the signal window (default ±2.5 kHz) is centred on it. This
-   is why measurement needs geometry: the signal moves through the passband
-   during the pass, and a fixed window would slide off it.
+2. **Follow the signal track.** The track model is
+   `track(t) = doppler_factor · doppler(t) + freq_offset_Hz`. For a raw
+   uncorrected spectrum `doppler_factor = 1`: the signal sweeps ±10 kHz
+   through the passband and the window must follow it. For SatNOGS
+   waterfalls (Doppler-corrected, see §3.4) `doppler_factor = 0`: the
+   satellite sits at a near-constant offset. The signal window (default
+   ±2.5 kHz) is centred on the track either way.
 3. **Signal estimate `S`** = mean of the top-3 bins in the window (robust to
    the exact carrier position within the window).
 4. **Noise estimate `N`** = *median* of the guard band 20–50 kHz either side
-   of the track — far enough to be clean of signal, and the median is immune
-   to interference spikes in a way the mean is not.
+   of the track, **restricted to the inner 80 % of the passband** — real SDR
+   waterfalls roll off 10–30 dB at the band edges (anti-alias filter), and
+   guard bins out there would fake a low noise floor (+16 dB SNR bias seen
+   on a real artifact). If fewer than 64 usable guard bins remain, the
+   estimator falls back to the median of the central 60 % of the passband,
+   clear of the signal window. The median is immune to the narrow signal
+   and to interference spikes in a way the mean is not.
 5. `SNR = S − N`. The unknown calibration constant cancels here (§1).
 
 **`compareAndPlot`** interpolates the prediction onto the measurement
@@ -307,9 +331,11 @@ Everything needed to regenerate the numbers is saved in
 | `satelliteScenario not found` | Aerospace / SatCom Toolbox missing — geomtest and real modes need it; selftest does not. |
 | `Satellite never rises above the horizon` | Wrong TLE, wrong station coordinates, or the obs window doesn't contain the pass. |
 | Doppler track (fig. 3) misses the ridge in **time** | Adjust `time_offset_s` in `run_validation.m`. |
-| Track misses in **frequency** | Stale TLE (get one from the observation date) or transmitter offset. |
+| Track misses in **frequency** | For hdf5: transmitter off-frequency — set `freq_offset_Hz`. For raw spectra: stale TLE (get one from the observation date). |
+| Strong **inverted S-curve** in the waterfall | A fixed terrestrial carrier mirrored by the Doppler correction — not the satellite. The satellite is the near-vertical trace. |
+| Measured SNR flat ≈ few dB, correlation ≈ 0 | No usable satellite signal on the track (weak/QRM-dominated observation): you are seeing the top-3-of-noise bias floor. Pick a stronger, well-vetted observation. |
 | `gaspl unavailable or f < 1 GHz` warning | Expected at UHF — 0.2 dB fixed loss is used; harmless. |
-| Noise-guard fallback warning | Waterfall span too narrow for the 20–50 kHz guard; the code falls back to all bins away from the track. Fine, but consider narrower guards. |
+| Noise-guard fallback warning | The 20–50 kHz guard falls outside the flat part of the passband; the code uses the central-passband median instead. Expected on 48 kHz-wide waterfalls; harmless. |
 | Selftest fails after an edit | You changed the extraction/comparison logic — fix before trusting real results. |
 
 ---
@@ -320,6 +346,6 @@ Everything needed to regenerate the numbers is saved in
 |---|---|---|
 | 1 | selftest chain (synthetic waterfall → extraction → comparison) | ✅ merged |
 | 2 | pass geometry + link-budget prediction (geomtest) | ✅ merged |
-| 3 | SatNOGS HDF5 artifact parser + dispatcher | ✅ this PR |
-| 4 | raw client `.dat` parser | ⏳ |
-| 5 | full integration in hdf5 mode | ⏳ |
+| 3 | SatNOGS HDF5 artifact parser + dispatcher | ✅ merged |
+| 4 | raw client `.dat` parser | ⏳ next |
+| 5 | full integration in hdf5 mode | ✅ this PR |
